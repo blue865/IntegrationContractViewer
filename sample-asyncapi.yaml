@@ -1,0 +1,68 @@
+asyncapi: 3.0.0
+info:
+  title: Account Service
+  version: 1.0.0
+  description: This service is in charge of processing user signups.
+  contact:
+    name: API Support
+    email: support@example.com
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  production:
+    host: broker.mycompany.com:5672
+    protocol: amqp
+    description: Production AMQP broker
+    security:
+      - type: userPassword
+
+channels:
+  userSignedup:
+    address: user/signedup
+    title: User signup events
+    description: This channel emits an event every time a user signs up.
+    messages:
+      userSignedUp:
+        $ref: '#/components/messages/UserSignedUp'
+
+operations:
+  onUserSignedUp:
+    action: receive
+    channel:
+      $ref: '#/channels/userSignedup'
+    summary: Notify when a user signs up.
+    messages:
+      - $ref: '#/channels/userSignedup/messages/userSignedUp'
+
+components:
+  messages:
+    UserSignedUp:
+      name: UserSignedUp
+      title: User signed up event
+      summary: Inform about a new user that has just signed up.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/UserSignedUpPayload'
+  schemas:
+    UserSignedUpPayload:
+      type: object
+      properties:
+        displayName:
+          type: string
+          description: Name of the user.
+        email:
+          type: string
+          format: email
+          description: Email of the user.
+        signedUpAt:
+          type: string
+          format: date-time
+          description: When the user signed up.
+      required:
+        - email
+  securitySchemes:
+    userPassword:
+      type: userPassword
+      description: Username + password auth

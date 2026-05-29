@@ -1,0 +1,12 @@
+# Local test/scratch files
+test-large.txt
+
+# Local autoopen config (user-specific paths)
+autoopen
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

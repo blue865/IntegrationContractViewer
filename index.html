@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AsyncAPI Viewer</title>
+  <link rel="stylesheet" href="vendor/asyncapi-default.min.css">
+  <style>
+    :root {
+      --toolbar-bg: #1f2937;
+      --toolbar-fg: #f9fafb;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --danger-bg: #fef2f2;
+      --danger-fg: #991b1b;
+      --danger-border: #fecaca;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f3f4f6; min-height: 100vh;
+    }
+    .toolbar {
+      position: sticky; top: 0; z-index: 100;
+      background: var(--toolbar-bg); color: var(--toolbar-fg);
+      padding: 10px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      box-shadow: 0 1px 3px rgba(0,0,0,.2);
+    }
+    .toolbar h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .3px; }
+    .toolbar .spacer { flex: 1; }
+    .toolbar button, .toolbar label.btn {
+      background: var(--accent); color: #fff; border: 0;
+      padding: 7px 14px; border-radius: 6px;
+      font-size: 13px; font-weight: 500; cursor: pointer; transition: background .15s;
+    }
+    .toolbar button:hover, .toolbar label.btn:hover { background: var(--accent-hover); }
+    .toolbar button:disabled { background: #4b5563; cursor: not-allowed; }
+    .toolbar input[type="file"] { display: none; }
+    .toolbar .filename {
+      font-size: 12px; opacity: .75; max-width: 320px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #drop-zone {
+      max-width: 760px; margin: 60px auto; padding: 48px 24px;
+      border: 2px dashed #d1d5db; border-radius: 12px;
+      text-align: center; background: #fff; color: #6b7280;
+      transition: border-color .15s, background .15s;
+    }
+    #drop-zone.dragover { border-color: var(--accent); background: #eef2ff; color: var(--accent); }
+    #drop-zone h2 { margin: 0 0 8px; color: #111827; font-size: 20px; }
+    #drop-zone p { margin: 4px 0; font-size: 14px; }
+    #drop-zone .hint { font-size: 12px; color: #9ca3af; margin-top: 12px; }
+    #error {
+      max-width: 880px; margin: 20px auto; padding: 16px 20px;
+      background: var(--danger-bg); border: 1px solid var(--danger-border);
+      color: var(--danger-fg); border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px; white-space: pre-wrap; word-break: break-word;
+    }
+    #asyncapi:empty { display: none; }
+  </style>
+</head>
+<body>
+
+<div class="toolbar">
+  <h1>AsyncAPI Viewer</h1>
+  <span class="filename" id="filename"></span>
+  <span class="spacer"></span>
+  <label class="btn" for="file-input">Open file</label>
+  <input type="file" id="file-input" accept=".yaml,.yml,.json,.txt">
+  <button id="save-default-btn" disabled title="Download autoopen.js with the current spec embedded - drop it next to index.html to auto-load on next visit.">Set as default</button>
+  <button id="clear-btn" disabled>Clear</button>
+</div>
+
+<div id="drop-zone">
+  <h2>Drop an AsyncAPI document here</h2>
+  <p>or click <strong>Open file</strong> in the toolbar</p>
+  <p class="hint">Supports AsyncAPI 3.0.0 in YAML or JSON. Everything runs locally - no upload.</p>
+</div>
+
+<div id="error" hidden></div>
+<div id="asyncapi"></div>
+
+<script>
+// Robust loader: handles `@` / `#` / `%` in the parent folder path on file://.
+(function () {
+  const errorBox = document.getElementById('error');
+  function showFatal(msg) { errorBox.textContent = msg; errorBox.hidden = false; }
+
+  function siblingUrl(name) {
+    const here = window.location.href;
+    const base = here.substring(0, here.lastIndexOf('/') + 1);
+    const schemeEnd = base.indexOf('://') + 3;
+    const scheme = base.substring(0, schemeEnd);
+    const pathPart = base.substring(schemeEnd);
+    const safePath = pathPart.split('/').map(seg =>
+      seg.replace(/[@#?%]/g, c => encodeURIComponent(c))
+    ).join('/');
+    return scheme + safePath + name;
+  }
+  window.__siblingUrl = siblingUrl;
+
+  function loadScript(name) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = siblingUrl('vendor/' + name);
+      s.onload = () => resolve(name);
+      s.onerror = () => reject(new Error('Failed to load ' + s.src));
+      document.head.appendChild(s);
+    });
+  }
+
+  window.addEventListener('error', (e) => {
+    if (typeof AsyncApiStandalone === 'undefined' && e.filename && e.filename.indexOf('asyncapi-react') !== -1) {
+      showFatal('Error while initializing AsyncAPI bundle:\n' + e.message + '\n  at ' + e.filename + ':' + e.lineno);
+    }
+  });
+
+  window.__viewerBoot = (async function () {
+    try {
+      await loadScript('js-yaml.min.js');
+      await loadScript('asyncapi-react.js');
+    } catch (err) {
+      showFatal('Could not load the bundled scripts.\n\n' + err.message + '\n\nIf your folder path contains "@", "#", or "%", that is the most common cause when opening via file://. Workarounds: move this folder to a path without those characters, or serve it via `python -m http.server 8000` and open http://localhost:8000/.');
+      throw err;
+    }
+    if (typeof AsyncApiStandalone === 'undefined') {
+      const msg = 'Scripts loaded but the AsyncApiStandalone global is missing. The bundle threw during startup - open the browser console (F12) for details.';
+      showFatal(msg);
+      throw new Error(msg);
+    }
+  })();
+})();
+</script>
+
+<script>
+(function () {
+  const fileInput = document.getElementById('file-input');
+  const clearBtn = document.getElementById('clear-btn');
+  const saveDefaultBtn = document.getElementById('save-default-btn');
+  const dropZone = document.getElementById('drop-zone');
+  const errorBox = document.getElementById('error');
+  const filenameEl = document.getElementById('filename');
+  const target = document.getElementById('asyncapi');
+
+  let currentSpecText = null;
+  let currentSpecName = null;
+
+  function showError(msg) { errorBox.textContent = msg; errorBox.hidden = false; }
+  function clearError() { errorBox.hidden = true; errorBox.textContent = ''; }
+  async function ensureLoaded() { await window.__viewerBoot; }
+
+  function parseSpec(text) {
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try { return JSON.parse(trimmed); } catch (_) { /* fall through to YAML */ }
+    }
+    return jsyaml.load(text);
+  }
+
+  function render(spec, name, sourceText) {
+    clearError();
+    try {
+      AsyncApiStandalone.render({
+        schema: spec,
+        config: {
+          show: { sidebar: true, info: true, servers: true, operations: true, messages: true, schemas: true, errors: true },
+          sidebar: { showServers: 'byDefault', showOperations: 'byDefault' }
+        }
+      }, target);
+      dropZone.style.display = 'none';
+      clearBtn.disabled = false;
+      saveDefaultBtn.disabled = false;
+      filenameEl.textContent = name || '';
+      currentSpecText = sourceText != null ? sourceText : (typeof spec === 'string' ? spec : JSON.stringify(spec, null, 2));
+      currentSpecName = name || 'spec.yaml';
+    } catch (err) {
+      showError('Failed to render: ' + (err && err.message ? err.message : String(err)));
+    }
+  }
+
+  async function loadFile(file) {
+    if (!file) return;
+    try { await ensureLoaded(); } catch (_) { return; }
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      const text = e.target.result;
+      try {
+        const spec = parseSpec(text);
+        if (!spec || typeof spec !== 'object') { showError('File is empty or could not be parsed as YAML/JSON.'); return; }
+        render(spec, file.name, text);
+      } catch (err) {
+        showError('Could not parse "' + file.name + '":\n' + (err && err.message ? err.message : String(err)));
+      }
+    };
+    reader.onerror = function () { showError('Failed to read file.'); };
+    reader.readAsText(file);
+  }
+
+  function downloadText(name, text, mime) {
+    const blob = new Blob([text], { type: mime || 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  saveDefaultBtn.addEventListener('click', () => {
+    if (currentSpecText == null) return;
+    const js =
+      '// Auto-generated by AsyncAPI Viewer. Drop next to index.html to auto-load on page open.\n' +
+      'window.__autoopen = ' +
+      JSON.stringify({ name: currentSpecName, content: currentSpecText }, null, 2) +
+      ';\n';
+    downloadText('autoopen.js', js, 'application/javascript');
+  });
+
+  fileInput.addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) loadFile(f);
+    e.target.value = '';
+  });
+
+  clearBtn.addEventListener('click', () => {
+    target.innerHTML = '';
+    dropZone.style.display = '';
+    clearBtn.disabled = true;
+    saveDefaultBtn.disabled = true;
+    filenameEl.textContent = '';
+    currentSpecText = null;
+    currentSpecName = null;
+    clearError();
+  });
+
+  ['dragenter', 'dragover'].forEach(evt =>
+    window.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.add('dragover'); })
+  );
+  ['dragleave', 'drop'].forEach(evt =>
+    window.addEventListener(evt, (e) => {
+      e.preventDefault();
+      if (evt === 'dragleave' && e.target !== document.documentElement && e.relatedTarget) return;
+      dropZone.classList.remove('dragover');
+    })
+  );
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) loadFile(f);
+  });
+
+  function fetchSibling(url) {
+    return new Promise((resolve) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        xhr.responseType = 'text';
+        xhr.onload = () => {
+          if (xhr.status === 0 || (xhr.status >= 200 && xhr.status < 300)) resolve(xhr.responseText);
+          else resolve(null);
+        };
+        xhr.onerror = () => resolve(null);
+        xhr.send();
+      } catch (_) { resolve(null); }
+    });
+  }
+
+  function normalizePath(p) {
+    if (!p) return p;
+    if (/^[a-z]+:\/\//i.test(p)) return p;
+    const win = p.match(/^([a-zA-Z]):[\\/](.*)$/);
+    if (win) {
+      const rest = win[2].replace(/\\/g, '/');
+      return 'file:///' + win[1].toLowerCase() + ':/' + rest;
+    }
+    if (p.startsWith('/')) return 'file://' + p;
+    return p;
+  }
+  function looksAbsolute(p) { return /^([a-zA-Z]:[\\/]|\/|[a-z]+:\/\/)/.test(p); }
+
+  async function loadSpecFromPath(specPath) {
+    const url = normalizePath(specPath);
+    const text = await fetchSibling(url);
+    if (text === null || text === '') {
+      const onFile = window.location.protocol === 'file:';
+      let hint;
+      if (onFile && looksAbsolute(specPath)) {
+        hint = 'You are on file:// and pointed at an absolute path. Most browsers block this. Open the spec via the toolbar and click "Set as default" to bake it into autoopen.js, or serve the folder via `python -m http.server 8000`.';
+      } else if (onFile) {
+        hint = 'When opening via file:// most browsers block reading sibling files. Click "Set as default" after loading the spec to bake it into autoopen.js, or serve the folder via `python -m http.server 8000`.';
+      } else {
+        hint = 'Check that the file exists and is readable at: ' + url;
+      }
+      showError('autoopen: could not read "' + specPath + '".\n\n' + hint);
+      return;
+    }
+    try {
+      const spec = parseSpec(text);
+      if (!spec || typeof spec !== 'object') { showError('autoopen: "' + specPath + '" is not valid YAML/JSON.'); return; }
+      render(spec, specPath, text);
+    } catch (err) {
+      showError('autoopen: could not parse "' + specPath + '":\n' + (err && err.message ? err.message : String(err)));
+    }
+  }
+
+  function renderInline(content, name) {
+    try {
+      const spec = parseSpec(content);
+      if (!spec || typeof spec !== 'object') { showError('autoopen.js: inline content is not valid YAML/JSON.'); return; }
+      render(spec, name || 'autoopen.js', content);
+    } catch (err) {
+      showError('autoopen.js: could not parse inline content:\n' + (err && err.message ? err.message : String(err)));
+    }
+  }
+
+  function loadAutoopenScript() {
+    return new Promise((resolve) => {
+      const s = document.createElement('script');
+      s.src = (window.__siblingUrl || ((n) => n))('autoopen.js');
+      s.onload = () => resolve(true);
+      s.onerror = () => resolve(false);
+      document.head.appendChild(s);
+    });
+  }
+
+  async function autoOpen() {
+    try { await ensureLoaded(); } catch (_) { return; }
+
+    const params = new URLSearchParams(window.location.search);
+    const specParam = params.get('spec');
+    if (specParam) { loadSpecFromPath(specParam); return; }
+
+    await loadAutoopenScript();
+    const ao = window.__autoopen;
+    if (ao) {
+      if (typeof ao === 'string') { loadSpecFromPath(ao); return; }
+      if (ao.content) { renderInline(ao.content, ao.name); return; }
+      if (ao.path) { loadSpecFromPath(ao.path); return; }
+    }
+
+    const autoopenText = await fetchSibling(window.__siblingUrl ? window.__siblingUrl('autoopen') : 'autoopen');
+    if (autoopenText === null) return;
+    const firstLine = autoopenText.split(/\r?\n/).map(l => l.trim()).find(l => l && !l.startsWith('#'));
+    if (!firstLine) return;
+    loadSpecFromPath(firstLine);
+  }
+
+  autoOpen();
+})();
+</script>
+
+</body>
+</html>
