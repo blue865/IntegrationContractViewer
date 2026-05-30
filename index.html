@@ -159,9 +159,76 @@
     return jsyaml.load(text);
   }
 
+  // JSON Pointer encoding for $ref fragments: '~' -> '~0', '/' -> '~1'.
+  function jsonPointerEscape(s) {
+    return String(s).replace(/~/g, '~0').replace(/\//g, '~1');
+  }
+
+  // Decide the synthetic operation action from the channel name prefix.
+  //   CMD.* -> send
+  //   ENT.* / EVT.* -> receive
+  // Returns null for unknown prefixes; those channels are left as-is.
+  function actionForChannelName(name) {
+    if (name.startsWith('CMD.')) return 'send';
+    if (name.startsWith('ENT.') || name.startsWith('EVT.')) return 'receive';
+    return null;
+  }
+
+  // AsyncAPI 3 viewers don't render a channel unless an operation references it.
+  // For each channel without a referencing operation, synthesize one in-memory
+  // so the channel and its messages show up. The original file is never written.
+  function injectMissingOperations(spec) {
+    if (!spec || typeof spec !== 'object') return spec;
+    const channels = spec.channels;
+    if (!channels || typeof channels !== 'object') return spec;
+
+    const ops = spec.operations && typeof spec.operations === 'object' ? spec.operations : {};
+    spec.operations = ops;
+
+    // Collect channel names that are already referenced by some operation.
+    const referenced = new Set();
+    for (const op of Object.values(ops)) {
+      const ref = op && op.channel && op.channel.$ref;
+      if (typeof ref === 'string') {
+        const m = ref.match(/^#\/channels\/(.+)$/);
+        if (m) {
+          // Reverse JSON-pointer escaping
+          referenced.add(m[1].replace(/~1/g, '/').replace(/~0/g, '~'));
+        }
+      }
+    }
+
+    for (const [channelName, channel] of Object.entries(channels)) {
+      if (referenced.has(channelName)) continue;
+      const action = actionForChannelName(channelName);
+      if (!action) continue;
+
+      // Avoid colliding with an existing operation key.
+      let opKey = channelName;
+      while (Object.prototype.hasOwnProperty.call(ops, opKey)) opKey = opKey + '_auto';
+
+      const channelRef = '#/channels/' + jsonPointerEscape(channelName);
+      const messageRefs = [];
+      if (channel && channel.messages && typeof channel.messages === 'object') {
+        for (const msgName of Object.keys(channel.messages)) {
+          messageRefs.push({ $ref: channelRef + '/messages/' + jsonPointerEscape(msgName) });
+        }
+      }
+
+      ops[opKey] = {
+        action: action,
+        channel: { $ref: channelRef },
+        summary: (action === 'send' ? 'Send to ' : 'Receive from ') + channelName + ' (auto-generated).',
+        messages: messageRefs
+      };
+    }
+    return spec;
+  }
+
   function render(spec, name, sourceText) {
     clearError();
     try {
+      spec = injectMissingOperations(spec);
       AsyncApiStandalone.render({
         schema: spec,
         config: {
